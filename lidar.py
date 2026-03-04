@@ -2,7 +2,19 @@ import numpy as np
 
 
 def get_lidar_min_distance(sim, lidar_handle):
-    """Reads the minimum distance from a vision-based LiDAR sensor."""
+    """
+    Retrieves depth buffer data from a CoppeliaSim vision sensor,
+    unpacks the raw bytes as float32, and returns the smallest
+    valid distance reading.
+
+    Args:
+        sim: CoppeliaSim remote API object.
+        lidar_handle (int): Handle to the vision sensor object.
+
+    Returns:
+        float: The minimum valid depth reading in metres,
+            or None if no valid reading is available.
+    """
     try:
         result = sim.getVisionSensorDepth(lidar_handle, 0)
         if result is None:
@@ -29,14 +41,16 @@ def get_lidar_min_distance(sim, lidar_handle):
 
 def read_lidar(sim, lidar_handles):
     """
-    Reads all lidar sensors and returns minimum distances.
+    Reads all LiDAR sensors and returns minimum distances.
 
     Args:
-        sim: CoppeliaSim API object
-        lidar_handles: dict of {'name': handle} pairs
+        sim: CoppeliaSim remote API object.
+        lidar_handles (dict[str, int]): Mapping of sensor name to
+            its CoppeliaSim object handle.
 
     Returns:
-        dict of {'name': min_distance} pairs
+        dict[str, float | None]: Mapping of sensor name to its
+            minimum distance reading, or None if unavailable.
     """
     readings = {}
     for name, handle in lidar_handles.items():
@@ -45,7 +59,16 @@ def read_lidar(sim, lidar_handles):
 
 
 def format_lidar_status(lidar_data):
-    """Returns a formatted string of LiDAR readings."""
+    """Returns a formatted string of LiDAR readings.
+
+    Args:
+        lidar_data (dict[str, float | None]): Mapping of sensor name
+            to distance value as returned by ``read_lidar``.
+
+    Returns:
+        str: Pipe-separated status string,
+            e.g. ``"L: 1.23m | R: N/A"``.
+    """
     parts = []
     for name, dist in lidar_data.items():
         if dist is not None:

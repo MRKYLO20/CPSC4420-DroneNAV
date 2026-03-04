@@ -15,7 +15,7 @@ FLIGHT_HEIGHT   = 1.5
 REACH_THRESHOLD = 0.5
 PAUSE_AT_WP     = 0
 SPINUP_DELAY    = 0
-SPEED           = 0.025
+SPEED           = 0.005
 
 WAYPOINT_NAMES = ['/pos1', '/pos2', '/pos3', '/pos4', '/pos5', '/pos6']
 
@@ -30,6 +30,15 @@ lidar_handles = {
 
 
 def run_simulation():
+    """
+    Runs the full waypoint-following simulation.
+
+    Loads waypoints, starts the CoppeliaSim simulation, and
+    navigates the drone through each waypoint while
+    printing live distance and LiDAR data. After all waypoints
+    are reached the drone descends to ground level and the
+    simulation is stopped.
+    """
     print('Loading waypoint(s)...')
     waypoints = load_waypoints(sim, WAYPOINT_NAMES, FLIGHT_HEIGHT)
 
