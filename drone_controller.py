@@ -11,11 +11,11 @@ client = RemoteAPIClient()
 sim = client.require('sim')
 
 # ── Config ──
-FLIGHT_HEIGHT   = 1.5
+FLIGHT_HEIGHT = 1.5
 REACH_THRESHOLD = 0.5
-PAUSE_AT_WP     = 0
-SPINUP_DELAY    = 0
-SPEED           = 0.005
+PAUSE_AT_WP = 0
+SPINUP_DELAY = 0
+SPEED = 0.005
 
 WAYPOINT_NAMES = ['/pos1', '/pos2', '/pos3', '/pos4', '/pos5', '/pos6']
 
@@ -26,6 +26,8 @@ target = sim.getObject('/target')
 lidar_handles = {
     'L': sim.getObject('/Quadcopter/base/lidarLeft/body/sensor'),
     'R': sim.getObject('/Quadcopter/base/lidarRight/body/sensor'),
+    'F': sim.getObject('/Quadcopter/base/lidarFront/body/sensor'),
+    'B': sim.getObject('/Quadcopter/base/lidarBack/body/sensor'),
 }
 
 

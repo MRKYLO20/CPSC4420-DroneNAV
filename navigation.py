@@ -1,4 +1,5 @@
 import math
+import numpy as np
 
 
 def get_drone_pos(sim, drone_handle):
@@ -13,6 +14,43 @@ def get_drone_pos(sim, drone_handle):
         list[float]: ``[x, y, z]`` position in world coordinates.
     """
     return sim.getObjectPosition(drone_handle, sim.handle_world)
+
+
+def get_drone_pos_array(sim, drone_handle):
+    """
+    Gets the world-frame position of the drone as a numpy array.
+
+    Identical to ``get_drone_pos`` but returns a numpy array
+    for direct use in the RL observation vector.
+
+    Args:
+        sim: CoppeliaSim remote API object.
+        drone_handle (int): Handle to the drone object.
+
+    Returns:
+        np.ndarray: Shape (3,) array of ``[x, y, z]`` in world coordinates.
+    """
+    pos = sim.getObjectPosition(drone_handle, sim.handle_world)
+    return np.array(pos, dtype=np.float32)
+
+
+def get_drone_velocity(sim, drone_handle):
+    """
+    Gets the linear velocity of the drone.
+
+    Retrieves the current velocity vector from CoppeliaSim.
+    Returns zeros if the velocity cannot be read.
+
+    Args:
+        sim: CoppeliaSim remote API object.
+        drone_handle (int): Handle to the drone object.
+
+    Returns:
+        np.ndarray: Shape (3,) array of ``[vx, vy, vz]`` in m/s.
+    """
+    result = sim.getObjectVelocity(drone_handle)
+    linear_vel = result[0] if isinstance(result, (list, tuple)) else [0, 0, 0]
+    return np.array(linear_vel, dtype=np.float32)
 
 
 def set_target(sim, target_handle, x, y, z):
@@ -30,7 +68,8 @@ def set_target(sim, target_handle, x, y, z):
 
 
 def distance(a, b):
-    """Calculates the Euclidean distance between two 3-D points.
+    """
+    Calculates the Euclidean distance between two 3-D points.
 
     Args:
         a (list[float]): First point as ``[x, y, z]``.
