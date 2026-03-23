@@ -1,16 +1,18 @@
-# CoppeliaSim Drone Waypoint Navigation
+# CoppeliaSim Drone Obstacle Avoidance
 
-A Python-based quadcopter controller for CoppeliaSim that autonomously navigates through a series of waypoints using vision-based LiDAR sensors for distance feedback.
+A reinforcement learning system for training a quadcopter in CoppeliaSim to autonomously explore and avoid obstacles using PPO (Proximal Policy Optimization) and LiDAR sensor feedback.
 
 ## Prerequisites
 
 - [CoppeliaSim](https://www.coppeliarobotics.com/) (EDU or Player)
-- Python 3.8+
+- Python 3.10+
+- NVIDIA GPU recommended (CUDA support for faster training)
 
 ## Installation
 
 ```bash
-pip install coppeliasim-zmqremoteapi-client numpy
+pip install coppeliasim-zmqremoteapi-client numpy gymnasium stable-baselines3 tensorboard
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 ```
 
 ## CoppeliaSim Scene Setup
@@ -18,39 +20,83 @@ pip install coppeliasim-zmqremoteapi-client numpy
 The scene should contain the following objects:
 
 - `/Quadcopter` — the drone model (with a built-in flight script)
-- `/target` — a dummy object the drone's flight script follows
+- `/target` — a dummy object the drone's flight script follows (set to non-detectable so LiDAR ignores it)
+- `/Quadcopter/base/lidarFront/body/sensor` — front LiDAR vision sensor
+- `/Quadcopter/base/lidarBack/body/sensor` — back LiDAR vision sensor
 - `/Quadcopter/base/lidarLeft/body/sensor` — left LiDAR vision sensor
 - `/Quadcopter/base/lidarRight/body/sensor` — right LiDAR vision sensor
-- `/pos1` through `/pos6` — dummy objects used as waypoints
+- Static obstacles (trees, buildings, etc.) and dynamic obstacles (people on paths)
 
 ## Usage
 
-1. Open your scene in CoppeliaSim.
-2. Make sure the ZeroMQ remote API is enabled (it is by default in recent versions).
-3. Run the controller:
+### Training
+
+1. Open your scene in CoppeliaSim (do not start the simulation).
+2. Run the training script:
 
 ```bash
-python drone_controller.py
+python train.py
 ```
 
-The drone will take off, visit each waypoint in sequence, and land when finished. Live distance and LiDAR readings are printed to the terminal.
+The script will automatically start/stop the simulation, train the drone using PPO, and save model checkpoints to `./models/checkpoints/`. Training progress can be monitored with TensorBoard:
 
-## Project Structure
+```bash
+tensorboard --logdir ./logs/
+```
+
+### Testing a Trained Model
+
+```bash
+python train.py --test
+python train.py --test --model models/checkpoints/drone_ppo_50000_steps
+```
+
+## How It Works
+
+The drone learns to fly freely through the environment, exploring while avoiding obstacles. There are no waypoints or predefined paths — the agent learns purely from experience.
+
+**Observation (10D):** 4 LiDAR distances (front, back, left, right), 3D drone position, and 3D drone velocity.
+
+**Action (3D):** Velocity adjustments in x, y, and z, applied on top of baseline safety rules.
+
+**Reward:** The agent earns rewards for surviving each timestep and exploring new areas, while receiving penalties for getting close to obstacles, collisions, going out of bounds, or hovering in place.
+
+**Baseline Safety Rules:** Rule-based behaviors (slow down near obstacles, gain altitude when very close, push away from obstacle direction) provide a foundation that the RL agent learns to work with or override.
+
+## Structure
 
 | File | Description |
 |------|-------------|
-| `drone_controller.py` | Main entry point — connects to CoppeliaSim and runs the waypoint loop |
-| `navigation.py` | Position reading, distance calculation, and target movement |
-| `lidar.py` | Reads and formats depth data from vision-based LiDAR sensors |
-| `waypoints.py` | Loads waypoint positions from CoppeliaSim dummy objects |
+| `train.py` | PPO training and testing — all tunable config at the top |
+| `drone_environment.py` | Gymnasium environment wrapping CoppeliaSim for RL training |
+| `navigation.py` | Position reading, velocity, distance calculation, and target movement |
+| `lidar.py` | Reads and formats depth data from 4 vision-based LiDAR sensors |
 
 ## Configuration
 
-Key parameters can be adjusted at the top of `drone_controller.py`:
+### Environment Parameters
+
+Adjustable at the top of `train.py` in `ENV_CONFIG`:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `FLIGHT_HEIGHT` | `1.5` | Altitude (m) assigned to low waypoints |
-| `REACH_THRESHOLD` | `0.5` | Distance (m) at which a waypoint is considered reached |
-| `SPEED` | `0.005` | Movement interpolation factor (0–1) |
-| `PAUSE_AT_WP` | `0` | Seconds to pause at each waypoint |
+| `max_steps` | `2000` | Max steps before episode ends |
+| `speed_scale` | `0.05` | Scales agent action into movement |
+| `collision_distance` | `0.3` | LiDAR distance that counts as a crash (m) |
+| `proximity_threshold` | `1.0` | Distance to start avoiding obstacles (m) |
+| `altitude_boost_threshold` | `0.5` | Distance to start gaining altitude (m) |
+| `flight_height` | `1.5` | Starting flight height (m) |
+| `exploration_grid_size` | `0.5` | Grid cell size for exploration tracking (m) |
+
+### PPO Hyperparameters
+
+Adjustable at the top of `train.py` in `PPO_CONFIG`:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `learning_rate` | `3e-4` | Learning rate (alpha) |
+| `n_steps` | `2048` | Steps per rollout before policy update |
+| `batch_size` | `64` | Minibatch size for each gradient step |
+| `n_epochs` | `10` | PPO update epochs per rollout |
+| `gamma` | `0.99` | Discount factor for future rewards |
+| `ent_coef` | `0.01` | Entropy coefficient (encourages exploration) |
