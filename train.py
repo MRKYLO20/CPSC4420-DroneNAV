@@ -8,9 +8,10 @@ Requirements:
     pip install stable-baselines3 gymnasium numpy torch
 
 Usage:
-    Train:  python train.py
-    Test:   python train.py --test
-    Custom: python train.py --test --model models/checkpoints/drone_ppo_50000_steps
+    Train:   python train.py
+    Resume:  python train.py --resume --model models/checkpoints/drone_ppo_10000_steps
+    Test:    python train.py --test
+    Custom:  python train.py --test --model models/checkpoints/drone_ppo_50000_steps
 """
 
 import os
@@ -111,7 +112,7 @@ def make_env():
     return env
 
 
-def train():
+def train(resume_path=None):
     """
     Runs PPO training.
 
@@ -119,6 +120,13 @@ def train():
     configured hyperparameters, and trains for TOTAL_TIMESTEPS.
     Saves checkpoints every CHECKPOINT_FREQ steps and a final
     model when training completes or is interrupted with Ctrl+C.
+
+    If resume_path is provided, loads a previously saved model
+    and continues training from where it left off.
+
+    Args:
+        resume_path (str, optional): Path to a saved model to
+            resume training from (without .zip extension).
     """
 
     os.makedirs("models", exist_ok=True)
@@ -134,22 +142,31 @@ def train():
     # Environment
     env = make_env()
 
-    # PPO Model
-    model = PPO(
-        policy="MlpPolicy",
-        env=env,
-        **PPO_CONFIG,
-        verbose=1,
-        device=device,
-        tensorboard_log="./logs/",
-        policy_kwargs=dict(
-            net_arch=dict(
-                pi=HIDDEN_LAYERS,
-                vf=HIDDEN_LAYERS,
+    # PPO Model — load existing or create new
+    if resume_path:
+        print(f"Resuming training from: {resume_path}")
+        model = PPO.load(
+            resume_path,
+            env=env,
+            device=device,
+            tensorboard_log="./logs/",
+        )
+    else:
+        model = PPO(
+            policy="MlpPolicy",
+            env=env,
+            **PPO_CONFIG,
+            verbose=1,
+            device=device,
+            tensorboard_log="./logs/",
+            policy_kwargs=dict(
+                net_arch=dict(
+                    pi=HIDDEN_LAYERS,
+                    vf=HIDDEN_LAYERS,
+                ),
+                activation_fn=torch.nn.ReLU,
             ),
-            activation_fn=torch.nn.ReLU,
-        ),
-    )
+        )
 
     print("\n" + "=" * 60)
     print("  Drone Obstacle Avoidance — PPO Training")
@@ -163,6 +180,8 @@ def train():
     print(f"  Gamma:        {PPO_CONFIG['gamma']}")
     print(f"  Max steps:    {ENV_CONFIG['max_steps']} per episode")
     print(f"  Total:        {TOTAL_TIMESTEPS:,} timesteps")
+    if resume_path:
+        print(f"  Resumed from: {resume_path}")
     print("=" * 60 + "\n")
 
     # ── Callbacks ──
@@ -182,6 +201,7 @@ def train():
             total_timesteps=TOTAL_TIMESTEPS,
             callback=[checkpoint_cb, metrics_cb],
             progress_bar=True,
+            reset_num_timesteps=resume_path is None,
         )
     except KeyboardInterrupt:
         print("\nTraining interrupted — saving current model...")
@@ -246,5 +266,11 @@ if __name__ == "__main__":
             if arg == "--model" and i + 1 < len(sys.argv):
                 path = sys.argv[i + 1]
         test(path)
+    elif "--resume" in sys.argv:
+        path = "models/drone_ppo_final"
+        for i, arg in enumerate(sys.argv):
+            if arg == "--model" and i + 1 < len(sys.argv):
+                path = sys.argv[i + 1]
+        train(resume_path=path)
     else:
         train()

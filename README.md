@@ -51,6 +51,17 @@ python train.py --test
 python train.py --test --model models/checkpoints/drone_ppo_50000_steps
 ```
 
+### Resuming Training
+
+If training was interrupted or you want to continue training from a checkpoint:
+
+```bash
+python train.py --resume --model models/checkpoints/drone_ppo_10000_steps
+python train.py --resume --model models/drone_ppo_final
+```
+
+This loads the saved model weights and continues training for another `TOTAL_TIMESTEPS` steps. TensorBoard logs will continue in the same run.
+
 ## How It Works
 
 The drone learns to fly freely through the environment, exploring while avoiding obstacles. There are no waypoints or predefined paths — the agent learns purely from experience.
