@@ -64,7 +64,7 @@ def set_target(sim, target_handle, x, y, z):
         y (float): Target y-coordinate in metres.
         z (float): Target z-coordinate in metres.
     """
-    sim.setObjectPosition(target_handle, sim.handle_world, [x, y, z])
+    sim.setObjectPosition(target_handle, sim.handle_world, [float(x), float(y), float(z)])
 
 
 def distance(a, b):
