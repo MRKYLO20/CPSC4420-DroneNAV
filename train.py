@@ -40,6 +40,8 @@ ENV_CONFIG = dict(
     min_altitude=0.3,                  # Lowest allowed flight height (m)
     max_altitude=4.0,                  # Highest allowed flight height (m)
     flight_height=1.5,                 # Starting flight height (m)
+    ideal_altitude=1.5,                # Ideal cruising altitude — rewarded for staying near (m)
+    altitude_boost_cap=2.0,            # Max altitude the baseline boost can push to (m)
     exploration_grid_size=0.5,         # Size of grid cells for exploration tracking (m)
 )
 
