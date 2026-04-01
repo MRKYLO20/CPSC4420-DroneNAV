@@ -3,42 +3,6 @@ Gymnasium environment for CoppeliaSim drone obstacle avoidance.
 
 The drone's goal is to fly freely, explore the environment, and
 avoid obstacles (trees, people, buildings) for as long as possible.
-
-Observation (10D):
-    - 4 LiDAR distances (front, back, left, right)
-    - 3 drone position (x, y, z)
-    - 3 drone velocity (vx, vy, vz)
-
-Action (3D):
-    - Velocity adjustments (dx, dy, dz) in [-1, 1]
-    - Applied on top of baseline safety rules
-
-Reward:
-    + Survival bonus each step
-    + Exploration bonus for visiting new grid cells
-    - Proximity penalty when near obstacles
-    - Collision penalty (episode ends)
-    - Out-of-bounds penalty (episode ends)
-
-Baseline rules (agent can override):
-    - Slow down when obstacles are close
-    - Gain altitude when obstacles are very close
-"""
-
-import math
-import time
-import numpy as np
-import gymnasium as gym
-from gymnasium import spaces
-
-from coppeliasim_zmqremoteapi_client import RemoteAPIClient
-
-
-"""
-Gymnasium environment for CoppeliaSim drone obstacle avoidance.
-
-The drone's goal is to fly freely, explore the environment, and
-avoid obstacles (trees, people, buildings) for as long as possible.
 No waypoints or destinations — purely learning-based navigation.
 
 Follows the standard Gymnasium API:
@@ -56,16 +20,17 @@ Action (3D):
 
 Reward:
     +1.0  per step survived
-    +2.0  for visiting a new grid cell
+    +5.0  for visiting a new grid cell
+    +0.5  movement bonus (speed above 0.1 m/s)
     -var  proximity penalty (scales with closeness to obstacles)
-    -0.5  hovering penalty (speed below 0.05 m/s)
+    -var  stagnation penalty (camping in one cell)
+    -var  altitude penalty (scales with distance from ideal)
+    -0.3  hovering penalty (speed below 0.05 m/s)
     -50   collision (episode terminates)
     -50   out of bounds (episode terminates)
 
-Baseline safety rules (agent can override):
-    - Slow down when obstacles are within proximity_threshold
-    - Gain altitude when obstacles are within altitude_boost_threshold
-    - Push away from obstacle direction
+Baseline safety rules:
+    - Light horizontal repulsion when obstacles are detected
 """
 
 import time
@@ -86,9 +51,9 @@ class DroneAvoidanceEnv(gym.Env):
     Implements the standard Gymnasium Env interface so it can be
     used with any compatible RL library (stable-baselines3, etc).
 
-    The agent controls the drone's velocity in 3D space while
-    baseline safety rules provide a foundation that the agent
-    can learn to work with or override.
+    The agent controls the drone's velocity in 3D space. Altitude
+    is clamped and penalized to discourage cheating by flying above
+    obstacles. Baseline repulsion provides a light horizontal nudge.
     """
 
     metadata = {"render_modes": ["human"], "render_fps": 20}
@@ -296,11 +261,12 @@ class DroneAvoidanceEnv(gym.Env):
 
         The reward signal is a combination of:
             +1.0  — survival bonus (awarded every step)
-            +2.0  — exploration bonus (new grid cell visited)
-            +0.5  — altitude reward (at ideal cruising altitude)
+            +5.0  — exploration bonus (new grid cell visited)
+            +0.5  — movement bonus (speed above 0.1 m/s)
             -var  — proximity penalty (scales with closeness)
+            -var  — stagnation penalty (camping in one cell)
             -var  — altitude penalty (scales with distance from ideal)
-            -0.5  — hovering penalty (speed below 0.05 m/s)
+            -0.3  — hovering penalty (speed below 0.05 m/s)
             -50   — collision (episode terminates)
             -50   — out of bounds (episode terminates)
 
@@ -333,8 +299,8 @@ class DroneAvoidanceEnv(gym.Env):
             reward += 5.0
             info['new_cell'] = True
 
-        # Movement bonus — reward any forward motion
-        speed = np.linalg.norm(vel)
+        # Movement bonus — reward any horizontal motion
+        speed = np.linalg.norm(vel[:2])
         if speed > 0.1:
             reward += 0.5
 
@@ -378,15 +344,15 @@ class DroneAvoidanceEnv(gym.Env):
         if speed < 0.05:
             reward -= 0.3
 
-        # Altitude reward/penalty — gentle but effective
+        # Altitude reward/penalty — keep drone near ideal height
         altitude_diff = abs(pos[2] - self.ideal_altitude)
         if altitude_diff < 0.3:
             reward += 0.5
         elif altitude_diff < 1.0:
-            reward -= altitude_diff * 1.0
+            reward -= altitude_diff * 1.5
         else:
-            # Squared penalty only kicks in above 1m deviation
-            reward -= (altitude_diff ** 2) * 2.0
+            # Squared penalty kicks in hard above 1m deviation
+            reward -= (altitude_diff ** 2) * 3.0
 
         # Max steps
         if self.step_count >= self.max_steps:

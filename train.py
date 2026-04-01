@@ -65,6 +65,7 @@ PPO_CONFIG = dict(
 TOTAL_TIMESTEPS = 500_000              # Total training timesteps
 CHECKPOINT_FREQ = 10_000               # Save model every N steps
 HIDDEN_LAYERS = [256, 256]             # Policy and value network architecture
+DEVICE = "cpu"                         # Device to train on ("cpu", "cuda", or "auto")
 
 
 class TrainingMetricsCallback(BaseCallback):
@@ -136,7 +137,10 @@ def train(resume_path=None):
     os.makedirs("logs", exist_ok=True)
 
     # Device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if DEVICE == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = DEVICE
     print(f"Training on: {device}")
     if device == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
