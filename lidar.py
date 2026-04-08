@@ -12,6 +12,37 @@ LIDAR_SENSOR_PATHS = {
 DEFAULT_MAX_RANGE = 5.0                                # Return value when no valid reading (m)
 
 
+def set_lidar_resolution(sim, lidar_handles, resolution):
+    """
+    Attempts to set the resolution of each LiDAR vision sensor.
+
+    Note: This depends on the CoppeliaSim API exposing the
+    vision sensor integer params in the remote API.
+
+    Args:
+        sim: CoppeliaSim remote API object.
+        lidar_handles (dict[str, int]): Sensor handle map.
+        resolution (int | None): Desired square resolution (e.g., 32).
+            If None or <= 0, no change is applied.
+    """
+    if resolution is None or resolution <= 0:
+        return
+
+    try:
+        param_x = sim.visionintparam_resolution_x
+        param_y = sim.visionintparam_resolution_y
+    except Exception:
+        print("  LiDAR resolution change not supported by this API build.")
+        return
+
+    for handle in lidar_handles.values():
+        try:
+            sim.setObjectInt32Param(handle, param_x, int(resolution))
+            sim.setObjectInt32Param(handle, param_y, int(resolution))
+        except Exception as e:
+            print(f"  LiDAR resolution set failed: {e}")
+
+
 def get_lidar_handles(sim, sensor_paths=None):
     """
     Loads all LiDAR sensor handles from CoppeliaSim.

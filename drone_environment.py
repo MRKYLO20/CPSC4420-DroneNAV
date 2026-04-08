@@ -40,7 +40,7 @@ from gymnasium import spaces
 
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 
-from lidar import get_lidar_handles, read_lidar_array
+from lidar import get_lidar_handles, read_lidar_array, set_lidar_resolution
 from navigation import get_drone_pos_array, get_drone_velocity, set_target
 
 
@@ -74,6 +74,13 @@ class DroneAvoidanceEnv(gym.Env):
         altitude_boost_cap=2.5,            # Max altitude the baseline boost can push to (m)
         exploration_grid_size=0.5,         # Size of grid cells for exploration tracking (m)
         render_mode=None,                  # Gymnasium render mode
+        profile_every=0,                   # Print timing stats every N steps (0 disables)
+        disable_visualization=True,        # Toggle visualization off on reset
+        lidar_resolution=32,               # Vision sensor resolution (square). None to skip
+        headless=False,                    # Skip display toggles when running headless
+        host="localhost",                  # Remote API host
+        port=23000,                        # Remote API port (unique per sim instance)
+        cntport=None,                      # Remote API control port (optional)
     ):
         """
         Initializes the drone environment.
@@ -123,6 +130,13 @@ class DroneAvoidanceEnv(gym.Env):
         self.altitude_boost_cap = altitude_boost_cap
         self.exploration_grid_size = exploration_grid_size
         self.render_mode = render_mode
+        self.profile_every = profile_every
+        self.disable_visualization = disable_visualization
+        self.lidar_resolution = lidar_resolution
+        self.headless = headless
+        self.host = host
+        self.port = port
+        self.cntport = cntport
 
         # Observation space
         # 4 lidar readings + 3 position + 3 velocity = 10
@@ -150,6 +164,17 @@ class DroneAvoidanceEnv(gym.Env):
         self.last_cell = None
         self._connected = False
 
+        # Profiling accumulators (seconds)
+        self._profile = {
+            "steps": 0,
+            "lidar_baseline": 0.0,
+            "target_move": 0.0,
+            "sim_step": 0.0,
+            "observation": 0.0,
+            "reward": 0.0,
+            "total": 0.0,
+        }
+
     #  Connection
     def _connect(self):
         """
@@ -161,7 +186,7 @@ class DroneAvoidanceEnv(gym.Env):
         if self._connected:
             return
 
-        self.client = RemoteAPIClient()
+        self.client = RemoteAPIClient(host=self.host, port=self.port, cntport=self.cntport)
         self.sim = self.client.require('sim')
 
         self.drone = self.sim.getObject('/Quadcopter')
@@ -169,6 +194,19 @@ class DroneAvoidanceEnv(gym.Env):
         self.lidar_handles = get_lidar_handles(self.sim)
 
         self._connected = True
+
+    def _apply_sim_settings(self):
+        """
+        Applies sim settings that tend to reset on simulation start.
+        """
+        if self.disable_visualization and not self.headless:
+            try:
+                self.sim.setBoolParam(self.sim.boolparam_display_enabled, False)
+            except Exception as e:
+                print(f"  Visualization toggle failed: {e}")
+
+        if self.lidar_resolution:
+            set_lidar_resolution(self.sim, self.lidar_handles, self.lidar_resolution)
 
     #  Observation
     def _get_observation(self):
@@ -247,7 +285,7 @@ class DroneAvoidanceEnv(gym.Env):
             if right < self.proximity_threshold:
                 repulsion_y -= (self.proximity_threshold - right)
 
-            repulsion_scale = 0.3
+            repulsion_scale = 0.8
             adjusted[0] += repulsion_x * repulsion_scale
             adjusted[1] += repulsion_y * repulsion_scale
 
@@ -285,24 +323,41 @@ class DroneAvoidanceEnv(gym.Env):
         pos = obs[4:7]
         vel = obs[7:10]
 
+        # Reward tuning parameters (grouped for easy adjustment)
+        survival_reward = 1.0
+        exploration_reward = 12
+        movement_reward = 1
+        stagnation_start = 100
+        stagnation_rate = 0.05
+        stagnation_cap = 2.0
+        proximity_penalty_scale = 3.5
+        collision_penalty = 50.0
+        out_of_bounds_penalty = 50.0
+        hovering_penalty = 0.25
+        altitude_bonus = 0.5
+        altitude_soft_band = 0.3
+        altitude_linear_band = 1.0
+        altitude_linear_scale = 1.5
+        altitude_quadratic_scale = 3.0
+
         reward = 0.0
         terminated = False
         info = {}
 
         # Survival reward
-        reward += 1.0
+        reward += survival_reward
 
         # Exploration reward — strong incentive to visit new areas
         cell = self._get_grid_cell(pos)
         if cell not in self.visited_cells:
             self.visited_cells.add(cell)
-            reward += 5.0
+            reward += exploration_reward
             info['new_cell'] = True
 
         # Movement bonus — reward any horizontal motion
         speed = np.linalg.norm(vel[:2])
         if speed > 0.1:
-            reward += 0.5
+            reward += movement_reward
 
         # Stagnation penalty — punish camping in one spot
         if cell == self.last_cell:
@@ -311,19 +366,24 @@ class DroneAvoidanceEnv(gym.Env):
             self.steps_in_current_cell = 0
             self.last_cell = cell
 
-        if self.steps_in_current_cell > 100:
-            stagnation_penalty = min((self.steps_in_current_cell - 100) * 0.05, 2.0)
+        if self.steps_in_current_cell > stagnation_start:
+            stagnation_penalty = min(
+                (self.steps_in_current_cell - stagnation_start) * stagnation_rate,
+                stagnation_cap,
+            )
             reward -= stagnation_penalty
 
         # Obstacle proximity penalty
         min_lidar = np.min(lidar)
         if min_lidar < self.proximity_threshold:
-            proximity_penalty = (self.proximity_threshold - min_lidar) * 3.0
+            proximity_penalty = (
+                self.proximity_threshold - min_lidar
+            ) * proximity_penalty_scale
             reward -= proximity_penalty
 
         # Collision
         if min_lidar < self.collision_distance:
-            reward -= 50.0
+            reward -= collision_penalty
             terminated = True
             info['collision'] = True
 
@@ -336,23 +396,23 @@ class DroneAvoidanceEnv(gym.Env):
             or pos[2] < self.min_altitude
             or pos[2] > self.max_altitude
         ):
-            reward -= 50.0
+            reward -= out_of_bounds_penalty
             terminated = True
             info['out_of_bounds'] = True
 
         # Hovering penalty
-        if speed < 0.05:
-            reward -= 0.3
+        if speed < 0.1:
+            reward -= hovering_penalty
 
         # Altitude reward/penalty — keep drone near ideal height
         altitude_diff = abs(pos[2] - self.ideal_altitude)
-        if altitude_diff < 0.3:
-            reward += 0.5
-        elif altitude_diff < 1.0:
-            reward -= altitude_diff * 1.5
+        if altitude_diff < altitude_soft_band:
+            reward += altitude_bonus
+        elif altitude_diff < altitude_linear_band:
+            reward -= altitude_diff * altitude_linear_scale
         else:
             # Squared penalty kicks in hard above 1m deviation
-            reward -= (altitude_diff ** 2) * 3.0
+            reward -= (altitude_diff ** 2) * altitude_quadratic_scale
 
         # Max steps
         if self.step_count >= self.max_steps:
@@ -395,6 +455,9 @@ class DroneAvoidanceEnv(gym.Env):
                 time.sleep(0.1)
         except Exception:
             pass
+
+        # Apply sim settings before starting
+        self._apply_sim_settings()
 
         # Start a fresh simulation
         self.sim.startSimulation()
@@ -449,11 +512,19 @@ class DroneAvoidanceEnv(gym.Env):
         """
         self.step_count += 1
 
+        do_profile = self.profile_every and self.profile_every > 0
+        if do_profile:
+            t_total_start = time.perf_counter()
+
         # Clip raw action to valid range
         action = np.clip(action, -1.0, 1.0)
 
         # Read current LiDAR for baseline rules
+        if do_profile:
+            t0 = time.perf_counter()
         lidar = read_lidar_array(self.sim, self.lidar_handles)
+        if do_profile:
+            self._profile["lidar_baseline"] += time.perf_counter() - t0
 
         # Apply baseline safety rules, then scale
         adjusted_action = self._apply_baseline_rules(action, lidar)
@@ -470,20 +541,56 @@ class DroneAvoidanceEnv(gym.Env):
         # Clamp altitude to allowed range
         new_z = max(self.min_altitude, min(self.max_altitude, new_z))
 
+        if do_profile:
+            t0 = time.perf_counter()
         set_target(self.sim, self.target, new_x, new_y, new_z)
+        if do_profile:
+            self._profile["target_move"] += time.perf_counter() - t0
 
         # Advance the simulation one step
+        if do_profile:
+            t0 = time.perf_counter()
         self.sim.step()
+        if do_profile:
+            self._profile["sim_step"] += time.perf_counter() - t0
 
         # Build observation and compute reward
+        if do_profile:
+            t0 = time.perf_counter()
         observation = self._get_observation()
+        if do_profile:
+            self._profile["observation"] += time.perf_counter() - t0
+
+        if do_profile:
+            t0 = time.perf_counter()
         reward, terminated, info = self._compute_reward(observation)
+        if do_profile:
+            self._profile["reward"] += time.perf_counter() - t0
         truncated = self.step_count >= self.max_steps
 
         # Attach step diagnostics
         info['step'] = self.step_count
         info['visited_cells'] = len(self.visited_cells)
         info['min_lidar'] = float(np.min(observation[:4]))
+
+        if do_profile:
+            self._profile["steps"] += 1
+            self._profile["total"] += time.perf_counter() - t_total_start
+
+            if self._profile["steps"] % self.profile_every == 0:
+                steps = self._profile["steps"]
+                def ms(key):
+                    return (self._profile[key] / steps) * 1000.0
+
+                print(
+                    "Timing avg (ms/step) | "
+                    f"total {ms('total'):.2f} | "
+                    f"lidar {ms('lidar_baseline'):.2f} | "
+                    f"target {ms('target_move'):.2f} | "
+                    f"sim.step {ms('sim_step'):.2f} | "
+                    f"obs {ms('observation'):.2f} | "
+                    f"reward {ms('reward'):.2f}"
+                )
 
         return observation, reward, terminated, truncated, info
 

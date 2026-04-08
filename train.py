@@ -16,6 +16,12 @@ Usage:
 
 import os
 import sys
+from datetime import datetime
+import numpy as np
+import subprocess
+import time
+import signal
+import threading
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
@@ -23,6 +29,7 @@ from stable_baselines3.common.callbacks import (
     CheckpointCallback,
 )
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from drone_environment import DroneAvoidanceEnv
 
@@ -31,9 +38,9 @@ from drone_environment import DroneAvoidanceEnv
 #  Environment Config
 ENV_CONFIG = dict(
     max_steps=2000,                    # Max steps before episode ends
-    speed_scale=0.05,                  # Scales agent action into movement
-    collision_distance=0.3,            # LiDAR distance that counts as a crash (m)
-    proximity_threshold=1.0,           # Distance to start avoiding obstacles (m)
+    speed_scale=0.1,                  # Scales agent action into movement
+    collision_distance=0.1,            # LiDAR distance that counts as a crash (m)
+    proximity_threshold=1,           # Distance to start avoiding obstacles (m)
     altitude_boost_threshold=0.5,      # Distance to start gaining altitude (m)
     boundary_min=-5.0,                 # Min x/y boundary of the flying area (m)
     boundary_max=5.0,                  # Max x/y boundary of the flying area (m)
@@ -43,16 +50,18 @@ ENV_CONFIG = dict(
     ideal_altitude=1.5,                # Ideal cruising altitude — rewarded for staying near (m)
     altitude_boost_cap=2.0,            # Max altitude the baseline boost can push to (m)
     exploration_grid_size=0.5,         # Size of grid cells for exploration tracking (m)
+    disable_visualization=True,        # Toggle visualization off on reset
+    lidar_resolution=32,               # Vision sensor resolution (square)
 )
 
 
 #  PPO parameters
 PPO_CONFIG = dict(
-    learning_rate=3e-4,                # Learning rate (alpha)
-    n_steps=2048,                      # Steps per rollout before policy update
+    learning_rate=5e-4,                # Learning rate (alpha)
+    n_steps=256,                      # Steps per rollout before policy update
     batch_size=64,                     # Minibatch size for each gradient step
     n_epochs=10,                       # Number of PPO update epochs per rollout
-    gamma=0.99,                        # Discount factor for future rewards
+    gamma=0.98,                        # Discount factor for future rewards
     gae_lambda=0.95,                   # GAE lambda for advantage estimation
     clip_range=0.2,                    # PPO clipping range for policy updates
     ent_coef=0.01,                     # Entropy coefficient (encourages exploration)
@@ -60,12 +69,43 @@ PPO_CONFIG = dict(
     max_grad_norm=0.5,                 # Max gradient norm for clipping
 )
 
+#  Evaluation Config
+EVAL_CONFIG = dict(
+    enabled=False,                      # Enable evaluation runs
+    eval_freq=5000,                    # Evaluate every N training timesteps
+    n_eval_episodes=1,                 # Number of eval episodes per check
+    seed=123,                          # Base seed for eval episodes
+    use_separate_env=True,             # Use a dedicated eval sim instance
+)
 
 #  Training Config
 TOTAL_TIMESTEPS = 500_000              # Total training timesteps
 CHECKPOINT_FREQ = 10_000               # Save model every N steps
+LATEST_SAVE_FREQ = 5_000               # Overwrite latest model every N steps
 HIDDEN_LAYERS = [256, 256]             # Policy and value network architecture
 DEVICE = "cpu"                         # Device to train on ("cpu", "cuda", or "auto")
+FINAL_MODEL_NAME = ""                  # Optional name (no extension). Example: "drone_ppo_run1"
+
+#  Multi-instance Config
+NUM_ENVS = 4                           # Number of parallel sims
+BASE_PORT = 23000                      # First ZMQ RPC port
+PORT_STRIDE = 2                        # Port increment per instance
+HOST = "localhost"
+
+#  Optional: Launch CoppeliaSim instances from Python
+LAUNCH_CONFIG = dict(
+    enable=True,                      # Set True to auto-launch sims
+    sim_exe_path="C:/Program Files/CoppeliaRobotics/CoppeliaSimEdu/coppeliaSim.exe", # Full path to coppeliaSim.exe
+    scene_path="C:/Users/jack/Documents/Github/CPSC4420-DroneNAV/CoppeliaSim Drone Follower.ttt", # Full path to .ttt scene
+    headless=True,                     # Use -h (no GUI). Keep True for speed
+    launch_delay=2.0,                  # Seconds between launches
+)
+
+# Keep env settings consistent with launcher headless mode
+ENV_CONFIG["headless"] = LAUNCH_CONFIG["headless"]
+
+# Track launched simulator processes for cleanup
+LAUNCHED_PROCS = []
 
 
 class TrainingMetricsCallback(BaseCallback):
@@ -100,6 +140,101 @@ class TrainingMetricsCallback(BaseCallback):
         return True
 
 
+class EvalMetricsCallback(BaseCallback):
+    """
+    Periodically runs deterministic evaluation episodes and logs
+    clean metrics to TensorBoard for easy comparison between runs.
+    """
+
+    def __init__(self, eval_env, eval_freq, n_eval_episodes=1, seed=0, verbose=0):
+        super().__init__(verbose)
+        self.eval_env = eval_env
+        self.eval_freq = int(eval_freq)
+        self.n_eval_episodes = int(n_eval_episodes)
+        self.seed = int(seed)
+        self._last_eval_timestep = 0
+
+    def _on_rollout_end(self) -> None:
+        if self.num_timesteps - self._last_eval_timestep < self.eval_freq:
+            return
+
+        self._last_eval_timestep = self.num_timesteps
+
+        rewards = []
+        lengths = []
+        min_lidars = []
+        visited_cells = []
+        collisions = 0
+        total_steps = 0
+
+        for i in range(self.n_eval_episodes):
+            obs, info = self.eval_env.reset(seed=self.seed + i)
+            done = False
+            ep_reward = 0.0
+            ep_len = 0
+            ep_min_lidar = float("inf")
+            ep_visited = 0
+
+            while not done:
+                action, _ = self.model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, info = self.eval_env.step(action)
+                ep_reward += reward
+                ep_len += 1
+                total_steps += 1
+
+                if "min_lidar" in info:
+                    ep_min_lidar = min(ep_min_lidar, float(info["min_lidar"]))
+                if info.get("collision"):
+                    collisions += 1
+                if "visited_cells" in info:
+                    ep_visited = info["visited_cells"]
+
+                done = terminated or truncated
+
+            rewards.append(ep_reward)
+            lengths.append(ep_len)
+            min_lidars.append(ep_min_lidar if ep_min_lidar != float("inf") else 0.0)
+            visited_cells.append(ep_visited)
+
+        mean_reward = float(np.mean(rewards)) if rewards else 0.0
+        mean_len = float(np.mean(lengths)) if lengths else 0.0
+        mean_min_lidar = float(np.mean(min_lidars)) if min_lidars else 0.0
+        mean_visited = float(np.mean(visited_cells)) if visited_cells else 0.0
+        collisions_per_1k = (collisions / total_steps * 1000.0) if total_steps > 0 else 0.0
+
+        self.logger.record("eval/mean_reward", mean_reward)
+        self.logger.record("eval/mean_ep_len", mean_len)
+        self.logger.record("eval/mean_visited_cells", mean_visited)
+        self.logger.record("eval/min_lidar", mean_min_lidar)
+        self.logger.record("eval/collisions_per_1k_steps", collisions_per_1k)
+
+    def _on_training_end(self) -> None:
+        try:
+            self.eval_env.close()
+        except Exception:
+            pass
+
+
+class PeriodicSaveCallback(BaseCallback):
+    """
+    Periodically saves/overwrites a "latest" model file.
+    """
+
+    def __init__(self, save_freq, save_path, verbose=0):
+        super().__init__(verbose)
+        self.save_freq = int(save_freq)
+        self.save_path = save_path
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps % self.save_freq == 0:
+            try:
+                self.model.save(self.save_path)
+            except Exception as e:
+                if self.verbose:
+                    print(f"Periodic save failed: {e}")
+        return True
+
+
 def make_env():
     """
     Creates and wraps the drone environment.
@@ -110,9 +245,52 @@ def make_env():
     Returns:
         Monitor: Wrapped DroneAvoidanceEnv instance.
     """
-    env = DroneAvoidanceEnv(**ENV_CONFIG)
+    env = DroneAvoidanceEnv(**ENV_CONFIG, host=HOST, port=BASE_PORT)
     env = Monitor(env)
     return env
+
+
+def make_env_fn(rank, port):
+    def _init():
+        env = DroneAvoidanceEnv(**ENV_CONFIG, host=HOST, port=port)
+        return env
+    return _init
+
+
+def build_vec_env():
+    if NUM_ENVS == 1:
+        return make_env()
+
+    ports = [BASE_PORT + i * PORT_STRIDE for i in range(NUM_ENVS)]
+    env_fns = [make_env_fn(i, port) for i, port in enumerate(ports)]
+    vec = SubprocVecEnv(env_fns)
+    vec = VecMonitor(vec)
+    return vec
+
+
+def launch_coppeliasim_instances():
+    if not LAUNCH_CONFIG["enable"]:
+        return
+
+    sim_exe = LAUNCH_CONFIG["sim_exe_path"]
+    scene = LAUNCH_CONFIG["scene_path"]
+    if not sim_exe or not scene:
+        raise ValueError("LAUNCH_CONFIG requires sim_exe_path and scene_path when enabled.")
+
+    total_instances = NUM_ENVS
+    if EVAL_CONFIG["enabled"] and EVAL_CONFIG["use_separate_env"]:
+        total_instances += 1
+
+    for i in range(total_instances):
+        port = BASE_PORT + i * PORT_STRIDE
+        args = [sim_exe]
+        if LAUNCH_CONFIG["headless"]:
+            args.append("-h")
+        args.append(f"-GzmqRemoteApi.rpcPort={port}")
+        args.extend(["-f", scene])
+        proc = subprocess.Popen(args)
+        LAUNCHED_PROCS.append(proc)
+        time.sleep(LAUNCH_CONFIG["launch_delay"])
 
 
 def train(resume_path=None):
@@ -145,8 +323,22 @@ def train(resume_path=None):
     if device == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
 
+    # Optional: launch sims
+    launch_coppeliasim_instances()
+
     # Environment
-    env = make_env()
+    env = build_vec_env()
+    eval_env = None
+    if EVAL_CONFIG["enabled"]:
+        if NUM_ENVS > 1 and EVAL_CONFIG["use_separate_env"]:
+            eval_port = BASE_PORT + NUM_ENVS * PORT_STRIDE
+            eval_env = DroneAvoidanceEnv(**ENV_CONFIG, host=HOST, port=eval_port)
+            eval_env = Monitor(eval_env)
+        elif NUM_ENVS == 1:
+            eval_env = make_env()
+        else:
+            print("Eval disabled: set EVAL_CONFIG['use_separate_env']=True or use NUM_ENVS=1.")
+    eval_env = make_env()
 
     # PPO Model — load existing or create new
     if resume_path:
@@ -197,26 +389,108 @@ def train(resume_path=None):
         name_prefix="drone_ppo",
     )
     metrics_cb = TrainingMetricsCallback()
+    eval_cb = None
+    if EVAL_CONFIG["enabled"] and eval_env is not None:
+        eval_cb = EvalMetricsCallback(
+            eval_env=eval_env,
+            eval_freq=EVAL_CONFIG["eval_freq"],
+            n_eval_episodes=EVAL_CONFIG["n_eval_episodes"],
+            seed=EVAL_CONFIG["seed"],
+        )
+    latest_name = FINAL_MODEL_NAME.strip() or "drone_ppo_final"
+    latest_path = f"models/{latest_name}"
+    latest_cb = PeriodicSaveCallback(
+        save_freq=LATEST_SAVE_FREQ,
+        save_path=latest_path,
+    )
 
     # ── Train ──
     print(f"Starting training for {TOTAL_TIMESTEPS:,} timesteps...")
     print("Monitor with: tensorboard --logdir ./logs/\n")
 
+    def _safe_close_env(env_obj):
+        if env_obj is None:
+            return
+        try:
+            env_obj.close()
+        except (EOFError, BrokenPipeError):
+            pass
+        except Exception:
+            pass
+
+    shutdown_requested = {"flag": False}
+
+    interrupted = {"flag": False}
+    force_exit_timer = {"started": False}
+
+    def _force_exit():
+        os._exit(1)
+
+    def _cleanup_and_exit(signum=None, frame=None):
+        if shutdown_requested["flag"]:
+            return
+        shutdown_requested["flag"] = True
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if hasattr(signal, "SIGBREAK"):
+            signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+        print("\nStopping training and shutting down sims...")
+        if not force_exit_timer["started"]:
+            force_exit_timer["started"] = True
+            threading.Timer(10.0, _force_exit).start()
+        for proc in LAUNCHED_PROCS:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        raise KeyboardInterrupt
+
+    # Ctrl+C and Ctrl+Break handling (Windows)
+    signal.signal(signal.SIGINT, _cleanup_and_exit)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _cleanup_and_exit)
+
     try:
+        callbacks = [checkpoint_cb, metrics_cb, latest_cb]
+        if eval_cb is not None:
+            callbacks.append(eval_cb)
+
         model.learn(
             total_timesteps=TOTAL_TIMESTEPS,
-            callback=[checkpoint_cb, metrics_cb],
+            callback=callbacks,
             progress_bar=True,
             reset_num_timesteps=resume_path is None,
         )
     except KeyboardInterrupt:
+        interrupted["flag"] = True
         print("\nTraining interrupted — saving current model...")
+        final_name = FINAL_MODEL_NAME.strip() or "drone_ppo_final"
+        final_path = f"models/{final_name}"
+        try:
+            model.save(final_path)
+            print(f"Model saved to {final_path}.zip")
+        except Exception as e:
+            print(f"Model save failed: {e}")
+    finally:
+        if not shutdown_requested["flag"]:
+            _safe_close_env(eval_env)
+            _safe_close_env(env)
+        for proc in LAUNCHED_PROCS:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    if interrupted["flag"]:
+        return
 
     # ── Save ──
-    model.save("models/drone_ppo_final")
-    print("Model saved to models/drone_ppo_final.zip")
+    final_name = FINAL_MODEL_NAME.strip() or "drone_ppo_final"
+    final_path = f"models/{final_name}"
+    model.save(final_path)
+    print(f"Model saved to {final_path}.zip")
 
-    env.close()
+    if not shutdown_requested["flag"]:
+        _safe_close_env(env)
 
 
 def test(model_path="models/drone_ppo_final"):
@@ -266,17 +540,22 @@ def test(model_path="models/drone_ppo_final"):
 
 
 if __name__ == "__main__":
+    final_name_arg = None
+    model_path_arg = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--model" and i + 1 < len(sys.argv):
+            model_path_arg = sys.argv[i + 1]
+        if arg == "--final-name" and i + 1 < len(sys.argv):
+            final_name_arg = sys.argv[i + 1]
+
+    if final_name_arg:
+        FINAL_MODEL_NAME = final_name_arg
+
     if "--test" in sys.argv:
-        path = "models/drone_ppo_final"
-        for i, arg in enumerate(sys.argv):
-            if arg == "--model" and i + 1 < len(sys.argv):
-                path = sys.argv[i + 1]
+        path = model_path_arg or "models/drone_ppo_final"
         test(path)
     elif "--resume" in sys.argv:
-        path = "models/drone_ppo_final"
-        for i, arg in enumerate(sys.argv):
-            if arg == "--model" and i + 1 < len(sys.argv):
-                path = sys.argv[i + 1]
+        path = model_path_arg or "models/drone_ppo_final"
         train(resume_path=path)
     else:
         train()
