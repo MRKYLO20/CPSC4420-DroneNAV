@@ -31,3 +31,5 @@ models/
 Thumbs.db
 .vscode/
 .idea/
+
+.claude

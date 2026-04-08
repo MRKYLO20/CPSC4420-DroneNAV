@@ -16,6 +16,7 @@ Usage:
 
 import os
 import sys
+import platform
 from datetime import datetime
 import numpy as np
 import subprocess
@@ -93,13 +94,26 @@ PORT_STRIDE = 2                        # Port increment per instance
 HOST = "localhost"
 
 #  Optional: Launch CoppeliaSim instances from Python
-LAUNCH_CONFIG = dict(
-    enable=True,                      # Set True to auto-launch sims
-    sim_exe_path="C:/Program Files/CoppeliaRobotics/CoppeliaSimEdu/coppeliaSim.exe", # Full path to coppeliaSim.exe
-    scene_path="C:/Users/jack/Documents/Github/CPSC4420-DroneNAV/CoppeliaSim Drone Follower.ttt", # Full path to .ttt scene
-    headless=True,                     # Use -h (no GUI). Keep True for speed
-    launch_delay=2.0,                  # Seconds between launches
-)
+#  Detects platform and sets paths accordingly
+if platform.system() == "Windows":
+    LAUNCH_CONFIG = dict(
+        enable=True,
+        sim_exe_path="C:/Program Files/CoppeliaRobotics/CoppeliaSimEdu/coppeliaSim.exe",
+        scene_path="C:/Users/jack/Documents/Github/CPSC4420-DroneNAV/CoppeliaSim Drone Follower.ttt",
+        headless=True,
+        launch_delay=2.0,
+    )
+else:
+    # Linux / Palmetto cluster (inside Apptainer container)
+    _project_dir = os.path.dirname(os.path.abspath(__file__))
+    LAUNCH_CONFIG = dict(
+        enable=True,
+        sim_exe_path="/opt/coppeliasim/coppeliaSim",
+        scene_path=os.path.join(_project_dir, "CoppeliaSim Drone Follower.ttt"),
+        headless=True,
+        launch_delay=3.0,
+        use_xvfb=True,  # Wrap with xvfb-run for headless rendering
+    )
 
 # Keep env settings consistent with launcher headless mode
 ENV_CONFIG["headless"] = LAUNCH_CONFIG["headless"]
@@ -283,7 +297,11 @@ def launch_coppeliasim_instances():
 
     for i in range(total_instances):
         port = BASE_PORT + i * PORT_STRIDE
-        args = [sim_exe]
+        args = []
+        # On Linux, wrap with xvfb-run for headless OpenGL rendering
+        if LAUNCH_CONFIG.get("use_xvfb", False):
+            args.extend(["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1024x768x24"])
+        args.append(sim_exe)
         if LAUNCH_CONFIG["headless"]:
             args.append("-h")
         args.append(f"-GzmqRemoteApi.rpcPort={port}")
