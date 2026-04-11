@@ -88,7 +88,7 @@ DEVICE = "cpu"                         # Device to train on ("cpu", "cuda", or "
 FINAL_MODEL_NAME = ""                  # Optional name (no extension). Example: "drone_ppo_run1"
 
 #  Multi-instance Config
-NUM_ENVS = 4                           # Number of parallel sims
+NUM_ENVS = 16                           # Number of parallel sims
 BASE_PORT = 23000                      # First ZMQ RPC port
 PORT_STRIDE = 2                        # Port increment per instance
 HOST = "localhost"

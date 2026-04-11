@@ -326,14 +326,14 @@ class DroneAvoidanceEnv(gym.Env):
         # Reward tuning parameters (grouped for easy adjustment)
         survival_reward = 1.0
         exploration_reward = 12
-        movement_reward = 1
-        stagnation_start = 100
-        stagnation_rate = 0.05
-        stagnation_cap = 2.0
+        movement_reward = 3.0
+        stagnation_start = 20
+        stagnation_rate = 0.3
+        stagnation_cap = 8.0
         proximity_penalty_scale = 3.5
         collision_penalty = 50.0
         out_of_bounds_penalty = 50.0
-        hovering_penalty = 0.25
+        hovering_penalty = 1
         altitude_bonus = 0.5
         altitude_soft_band = 0.3
         altitude_linear_band = 1.0
