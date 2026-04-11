@@ -65,8 +65,8 @@ class DroneAvoidanceEnv(gym.Env):
         collision_distance=0.3,            # LiDAR distance that counts as a crash (m)
         proximity_threshold=1.0,           # Distance to start avoiding obstacles (m)
         altitude_boost_threshold=0.5,      # Distance to start gaining altitude (m)
-        boundary_min=-5.0,                 # Min x/y boundary of the flying area (m)
-        boundary_max=5.0,                  # Max x/y boundary of the flying area (m)
+        boundary_min=-9.0,                 # Min x/y boundary of the flying area (m)
+        boundary_max=9.0,                  # Max x/y boundary of the flying area (m)
         min_altitude=0.3,                  # Lowest allowed flight height (m)
         max_altitude=4.0,                  # Highest allowed flight height (m)
         flight_height=1.5,                 # Starting flight height (m)
@@ -324,14 +324,14 @@ class DroneAvoidanceEnv(gym.Env):
         vel = obs[7:10]
 
         # Reward tuning parameters (grouped for easy adjustment)
-        survival_reward = 1.0
-        exploration_reward = 12
-        movement_reward = 3.0
+        survival_reward = 0.3
+        exploration_reward = 20
+        movement_reward = 4.0
         stagnation_start = 20
         stagnation_rate = 0.3
         stagnation_cap = 8.0
         proximity_penalty_scale = 3.5
-        collision_penalty = 50.0
+        collision_penalty = 60.0
         out_of_bounds_penalty = 50.0
         hovering_penalty = 1
         altitude_bonus = 0.5
