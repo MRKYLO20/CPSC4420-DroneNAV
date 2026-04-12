@@ -29,7 +29,8 @@ from stable_baselines3.common.callbacks import (
     CheckpointCallback,
 )
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import VecNormalize
 
 from drone_environment import DroneAvoidanceEnv
 
@@ -72,6 +73,13 @@ ENV_CONFIG = dict(
     altitude_linear_scale=0.3,         # WAS 1.5 — softened linear slope
     altitude_quadratic_scale=0.5,      # WAS 3.0 — softened quadratic slope
     action_smoothness_scale=0.02,      # NEW — penalty on ||a_t - a_{t-1}||^2
+    # ────────────────────────────────────────────────────────────────────
+
+    # ── Spawn randomization (Step 3) ────────────────────────────────────
+    # Breaks the fixed-start attractor by spawning the drone at a random
+    # (x, y) each episode. Spawn area is boundary ± margin.
+    randomize_start_pose=True,         # NEW — random spawn each reset
+    spawn_margin=2.0,                  # Inset from boundaries (m), spawn in [-7, 7]
     # ────────────────────────────────────────────────────────────────────
 
     disable_visualization=True,        # Toggle visualization off on reset
@@ -254,54 +262,61 @@ class EvalMetricsCallback(BaseCallback):
 
 class PeriodicSaveCallback(BaseCallback):
     """
-    Periodically saves/overwrites a "latest" model file.
+    Periodically saves/overwrites a "latest" model file and
+    the VecNormalize running statistics alongside it.
     """
 
-    def __init__(self, save_freq, save_path, verbose=0):
+    def __init__(self, save_freq, save_path, stats_path=None, verbose=0):
         super().__init__(verbose)
         self.save_freq = int(save_freq)
         self.save_path = save_path
+        self.stats_path = stats_path
 
     def _on_step(self) -> bool:
         if self.num_timesteps % self.save_freq == 0:
             try:
                 self.model.save(self.save_path)
+                if self.stats_path:
+                    self.model.get_env().save(self.stats_path)
             except Exception as e:
                 if self.verbose:
                     print(f"Periodic save failed: {e}")
         return True
 
 
-def make_env():
-    """
-    Creates and wraps the drone environment.
-
-    Applies the Monitor wrapper for episode stat tracking
-    (reward, length) which stable-baselines3 uses for logging.
-
-    Returns:
-        Monitor: Wrapped DroneAvoidanceEnv instance.
-    """
-    env = DroneAvoidanceEnv(**ENV_CONFIG, host=HOST, port=BASE_PORT)
-    env = Monitor(env)
-    return env
-
-
 def make_env_fn(rank, port):
+    """Returns a zero-arg factory that creates a DroneAvoidanceEnv on *port*."""
     def _init():
         env = DroneAvoidanceEnv(**ENV_CONFIG, host=HOST, port=port)
         return env
     return _init
 
 
-def build_vec_env():
-    if NUM_ENVS == 1:
-        return make_env()
+def build_vec_env(normalize=True):
+    """
+    Builds a vectorized environment, optionally wrapped in VecNormalize.
 
-    ports = [BASE_PORT + i * PORT_STRIDE for i in range(NUM_ENVS)]
-    env_fns = [make_env_fn(i, port) for i, port in enumerate(ports)]
-    vec = SubprocVecEnv(env_fns)
+    NUM_ENVS >= 2  →  SubprocVecEnv  (one process per sim)
+    NUM_ENVS == 1  →  DummyVecEnv    (single process, easier to debug)
+
+    Args:
+        normalize: If True (default), wrap with VecNormalize for
+            obs + reward normalization.  Pass False when you plan
+            to load saved VecNormalize stats via VecNormalize.load().
+
+    Returns:
+        VecNormalize or VecMonitor depending on *normalize*.
+    """
+    if NUM_ENVS == 1:
+        vec = DummyVecEnv([make_env_fn(0, BASE_PORT)])
+    else:
+        ports = [BASE_PORT + i * PORT_STRIDE for i in range(NUM_ENVS)]
+        env_fns = [make_env_fn(i, port) for i, port in enumerate(ports)]
+        vec = SubprocVecEnv(env_fns)
+
     vec = VecMonitor(vec)
+    if normalize:
+        vec = VecNormalize(vec, norm_obs=True, norm_reward=True, clip_obs=10.0)
     return vec
 
 
@@ -353,7 +368,12 @@ def train(resume_path=None):
 
     os.makedirs("models", exist_ok=True)
     os.makedirs("models/checkpoints", exist_ok=True)
+    os.makedirs("stats", exist_ok=True)
     os.makedirs("logs", exist_ok=True)
+
+    # Run name — used for model saves, stats, and TensorBoard logs
+    run_name = FINAL_MODEL_NAME.strip() or "drone_ppo_final"
+    stats_path = f"stats/{run_name}_vecnormalize.pkl"
 
     # Device
     if DEVICE == "auto":
@@ -367,18 +387,23 @@ def train(resume_path=None):
     # Optional: launch sims
     launch_coppeliasim_instances()
 
-    # Environment
-    env = build_vec_env()
+    # Environment (with VecNormalize)
+    if resume_path and os.path.exists(stats_path):
+        # Resume: load saved VecNormalize stats so the running mean/std
+        # match what the model was trained with.
+        print(f"Loading VecNormalize stats from: {stats_path}")
+        env = VecNormalize.load(stats_path, build_vec_env(normalize=False))
+    else:
+        env = build_vec_env(normalize=True)
+
     eval_env = None
     if EVAL_CONFIG["enabled"]:
         if NUM_ENVS > 1 and EVAL_CONFIG["use_separate_env"]:
             eval_port = BASE_PORT + NUM_ENVS * PORT_STRIDE
             eval_env = DroneAvoidanceEnv(**ENV_CONFIG, host=HOST, port=eval_port)
             eval_env = Monitor(eval_env)
-        elif NUM_ENVS == 1:
-            eval_env = make_env()
         else:
-            print("Eval disabled: set EVAL_CONFIG['use_separate_env']=True or use NUM_ENVS=1.")
+            print("Eval disabled: set EVAL_CONFIG['use_separate_env']=True and NUM_ENVS>1.")
 
     # PPO Model — load existing or create new
     if resume_path:
@@ -437,11 +462,11 @@ def train(resume_path=None):
             n_eval_episodes=EVAL_CONFIG["n_eval_episodes"],
             seed=EVAL_CONFIG["seed"],
         )
-    latest_name = FINAL_MODEL_NAME.strip() or "drone_ppo_final"
-    latest_path = f"models/{latest_name}"
+    latest_path = f"models/{run_name}"
     latest_cb = PeriodicSaveCallback(
         save_freq=LATEST_SAVE_FREQ,
         save_path=latest_path,
+        stats_path=stats_path,
     )
 
     # ── Train ──
@@ -499,17 +524,19 @@ def train(resume_path=None):
             callback=callbacks,
             progress_bar=True,
             reset_num_timesteps=resume_path is None,
+            tb_log_name=run_name,
         )
     except KeyboardInterrupt:
         interrupted["flag"] = True
         print("\nTraining interrupted — saving current model...")
-        final_name = FINAL_MODEL_NAME.strip() or "drone_ppo_final"
-        final_path = f"models/{final_name}"
+        final_path = f"models/{run_name}"
         try:
             model.save(final_path)
+            env.save(stats_path)
             print(f"Model saved to {final_path}.zip")
+            print(f"Stats saved to {stats_path}")
         except Exception as e:
-            print(f"Model save failed: {e}")
+            print(f"Save failed: {e}")
     finally:
         if not shutdown_requested["flag"]:
             _safe_close_env(eval_env)
@@ -524,10 +551,11 @@ def train(resume_path=None):
         return
 
     # ── Save ──
-    final_name = FINAL_MODEL_NAME.strip() or "drone_ppo_final"
-    final_path = f"models/{final_name}"
+    final_path = f"models/{run_name}"
     model.save(final_path)
+    env.save(stats_path)
     print(f"Model saved to {final_path}.zip")
+    print(f"Stats saved to {stats_path}")
 
     if not shutdown_requested["flag"]:
         _safe_close_env(env)
@@ -535,32 +563,49 @@ def train(resume_path=None):
 
 def test(model_path="models/drone_ppo_final"):
     """
-    Runs a trained model in the environment.
+    Runs a trained model in a single episode with deterministic actions.
 
-    Loads a saved PPO model and runs a single episode with
-    deterministic actions, printing live telemetry every
-    50 steps.
+    Builds a VecNormalize-wrapped env in eval mode, loads the saved
+    normalization stats alongside the model weights, and prints
+    live telemetry every 50 steps.
 
     Args:
         model_path (str): Path to the saved model file
             (without .zip extension).
     """
-    env = make_env()
+    # Derive stats path from the model name
+    run_name = os.path.basename(model_path)
+    stats_path = f"stats/{run_name}_vecnormalize.pkl"
+
+    # Build env with VecNormalize in eval mode (don't update stats)
+    if os.path.exists(stats_path):
+        print(f"Loading VecNormalize stats from: {stats_path}")
+        env = VecNormalize.load(stats_path, build_vec_env(normalize=False))
+    else:
+        print("Warning: no VecNormalize stats found, using fresh normalization")
+        env = build_vec_env(normalize=True)
+    env.training = False
+    env.norm_reward = False
+
     model = PPO.load(model_path, env=env)
     print(f"Loaded model: {model_path}")
 
-    obs, info = env.reset()
-    total_reward = 0
+    # VecEnv API: obs shape is (1, obs_dim), rewards/dones are arrays
+    obs = env.reset()
+    total_reward = 0.0
     step = 0
 
     while True:
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, info = env.step(action)
-        total_reward += reward
+        obs, rewards, dones, infos = env.step(action)
+        total_reward += float(rewards[0])
         step += 1
+        info = infos[0]
 
         if step % 50 == 0:
-            lidar = obs[:4]
+            # Get unnormalized obs for human-readable telemetry
+            raw_obs = env.get_original_obs()[0]
+            lidar = raw_obs[:4]
             print(
                 f"  Step {step:4d} | "
                 f"Reward: {total_reward:7.1f} | "
@@ -569,7 +614,7 @@ def test(model_path="models/drone_ppo_final"):
                 f"L:{lidar[2]:.2f}  R:{lidar[3]:.2f}"
             )
 
-        if terminated or truncated:
+        if dones[0]:
             print(f"\n  Episode done: {info}")
             print(f"  Total reward:   {total_reward:.1f}")
             print(f"  Steps survived: {step}")

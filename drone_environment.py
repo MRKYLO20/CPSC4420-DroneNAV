@@ -91,6 +91,9 @@ class DroneAvoidanceEnv(gym.Env):
         altitude_linear_scale,             # Linear penalty multiplier inside linear band
         altitude_quadratic_scale,          # Quadratic penalty multiplier outside linear band
         action_smoothness_scale,           # Penalty on ||a_t - a_{t-1}||^2 (0 = disabled)
+        # ── Spawn randomization ──
+        randomize_start_pose,              # If True, sample (x, y) each reset
+        spawn_margin,                      # Inset from boundary_min/max for spawn area (m)
         # ── Sim / IO (required — supplied by train.py) ──
         disable_visualization,             # Toggle visualization off on reset
         lidar_resolution,                  # Vision sensor resolution (square). None to skip
@@ -162,6 +165,10 @@ class DroneAvoidanceEnv(gym.Env):
         self.altitude_linear_scale = altitude_linear_scale
         self.altitude_quadratic_scale = altitude_quadratic_scale
         self.action_smoothness_scale = action_smoothness_scale
+
+        # Spawn randomization
+        self.randomize_start_pose = randomize_start_pose
+        self.spawn_margin = spawn_margin
 
         # Sim / IO
         self.render_mode = render_mode
@@ -460,13 +467,35 @@ class DroneAvoidanceEnv(gym.Env):
         self.last_cell = None
         self.prev_action = np.zeros(3, dtype=np.float32)
 
-        # Place target at drone's position at starting height
-        pos = get_drone_pos_array(self.sim, self.drone)
-        set_target(self.sim, self.target, pos[0], pos[1], self.flight_height)
+        # Place drone and target at the starting position
+        if self.randomize_start_pose:
+            lo = self.boundary_min + self.spawn_margin
+            hi = self.boundary_max - self.spawn_margin
+            z = self.flight_height
+            safe_threshold = max(self.collision_distance * 3, 0.3)
+
+            # Rejection sampling: keep trying until we find a spawn that
+            # isn't inside or right next to an obstacle.
+            for attempt in range(20):
+                x = float(self.np_random.uniform(lo, hi))
+                y = float(self.np_random.uniform(lo, hi))
+                self.sim.setObjectPosition(
+                    self.drone, self.sim.handle_world, [x, y, z]
+                )
+                set_target(self.sim, self.target, x, y, z)
+                # Step a few times so sensors + flight controller update
+                for _ in range(10):
+                    self.sim.step()
+                lidar = read_lidar_array(self.sim, self.lidar_handles)
+                if np.min(lidar) > safe_threshold:
+                    break  # Safe spawn
+        else:
+            pos = get_drone_pos_array(self.sim, self.drone)
+            set_target(self.sim, self.target, pos[0], pos[1], self.flight_height)
 
         # Build first observation
         observation = self._get_observation()
-        info = {'visited_cells': 0}
+        info = {'visited_cells': 0, 'start_pos': [x, y, z] if self.randomize_start_pose else None}
 
         return observation, info
 
