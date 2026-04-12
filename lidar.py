@@ -107,25 +107,6 @@ def get_lidar_min_distance(sim, lidar_handle, max_range=DEFAULT_MAX_RANGE):
         return max_range
 
 
-def read_lidar(sim, lidar_handles):
-    """
-    Reads all LiDAR sensors and returns minimum distances.
-
-    Args:
-        sim: CoppeliaSim remote API object.
-        lidar_handles (dict[str, int]): Mapping of sensor name to
-            its CoppeliaSim object handle.
-
-    Returns:
-        dict[str, float]: Mapping of sensor name to its
-            minimum distance reading.
-    """
-    readings = {}
-    for name, handle in lidar_handles.items():
-        readings[name] = get_lidar_min_distance(sim, handle)
-    return readings
-
-
 def read_lidar_array(sim, lidar_handles):
     """
     Reads all LiDAR sensors and returns distances as a numpy array.
@@ -150,22 +131,3 @@ def read_lidar_array(sim, lidar_handles):
     ], dtype=np.float32)
 
 
-def format_lidar_status(lidar_data):
-    """
-    Returns a formatted string of LiDAR readings.
-
-    Args:
-        lidar_data (dict[str, float | None]): Mapping of sensor name
-            to distance value as returned by ``read_lidar``.
-
-    Returns:
-        str: Pipe-separated status string,
-            e.g. ``"F: 1.23m | B: 2.10m | L: 0.85m | R: N/A"``.
-    """
-    parts = []
-    for name, dist in lidar_data.items():
-        if dist is not None:
-            parts.append(f"{name}: {dist:.2f}m")
-        else:
-            parts.append(f"{name}: N/A")
-    return " | ".join(parts)

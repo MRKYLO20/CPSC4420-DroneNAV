@@ -17,7 +17,6 @@ Usage:
 import os
 import sys
 import platform
-from datetime import datetime
 import numpy as np
 import subprocess
 import time
@@ -121,10 +120,10 @@ HOST = "localhost"
 #  Detects platform and sets paths accordingly
 if platform.system() == "Windows":
     LAUNCH_CONFIG = dict(
-        enable=True,
+        enable=False,
         sim_exe_path="C:/Program Files/CoppeliaRobotics/CoppeliaSimEdu/coppeliaSim.exe",
         scene_path="C:/Users/jack/Documents/Github/CPSC4420-DroneNAV/CoppeliaSim Drone Follower.ttt",
-        headless=True,
+        headless=False,
         launch_delay=2.0,
     )
 else:
@@ -380,7 +379,6 @@ def train(resume_path=None):
             eval_env = make_env()
         else:
             print("Eval disabled: set EVAL_CONFIG['use_separate_env']=True or use NUM_ENVS=1.")
-    eval_env = make_env()
 
     # PPO Model — load existing or create new
     if resume_path:
