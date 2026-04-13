@@ -41,7 +41,7 @@ ENV_CONFIG = dict(
     max_steps=2000,                    # Max steps before episode ends
     speed_scale=0.1,                   # Scales agent action into movement
     collision_distance=0.1,            # LiDAR distance that counts as a crash (m)
-    proximity_threshold=0.25,          # WAS 1.0 — narrowed so narrow corridors are penalty-free
+    proximity_threshold=0.4,           # WAS 0.25 — bumped for longer push-back gradient
     boundary_min=-9.0,                 # Min x/y boundary of the flying area (m)
     boundary_max=9.0,                  # Max x/y boundary of the flying area (m)
     min_altitude=0.3,                  # Lowest allowed flight height (m)
@@ -49,6 +49,7 @@ ENV_CONFIG = dict(
     flight_height=1.5,                 # Starting flight height (m)
     ideal_altitude=1.5,                # Ideal cruising altitude — rewarded for staying near (m)
     exploration_grid_size=0.5,         # Size of grid cells for exploration tracking (m)
+    lidar_bins=4,                      # Angular bins per sensor (4 bins × 4 sensors = 16 features)
 
     # ── Reward weights (Step 1 rebalance) ───────────────────────────────
     # Goal: break the "big perimeter circle" attractor by removing the
@@ -73,6 +74,8 @@ ENV_CONFIG = dict(
     altitude_linear_scale=0.3,         # WAS 1.5 — softened linear slope
     altitude_quadratic_scale=0.5,      # WAS 3.0 — softened quadratic slope
     action_smoothness_scale=0.02,      # NEW — penalty on ||a_t - a_{t-1}||^2
+    boundary_warning_distance=0.7,     # NEW — penalty ramps up within 0.7m of any edge
+    boundary_penalty_scale=2.0,        # NEW — multiplier on boundary proximity penalty
     # ────────────────────────────────────────────────────────────────────
 
     # ── Spawn randomization (Step 3) ────────────────────────────────────
@@ -83,7 +86,7 @@ ENV_CONFIG = dict(
     # ────────────────────────────────────────────────────────────────────
 
     disable_visualization=True,        # Toggle visualization off on reset
-    lidar_resolution=32,               # Vision sensor resolution (square)
+    lidar_resolution=16,               # Vision sensor resolution (square)
 )
 
 
