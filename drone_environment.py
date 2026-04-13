@@ -205,6 +205,7 @@ class DroneAvoidanceEnv(gym.Env):
         self.sim = None
         self.drone = None
         self.target = None
+        self.flight_script = None
         self.lidar_handles = {}
 
         # ── Episode state ──
@@ -241,6 +242,9 @@ class DroneAvoidanceEnv(gym.Env):
 
         self.drone = self.sim.getObject('/Quadcopter')
         self.target = self.sim.getObject('/target')
+        self.flight_script = self.sim.getScript(
+            self.sim.scripttype_childscript, self.drone, ''
+        )
         self.lidar_handles = get_lidar_handles(self.sim)
 
         self._connected = True
@@ -478,49 +482,36 @@ class DroneAvoidanceEnv(gym.Env):
             z = self.flight_height
             safe_threshold = max(self.collision_distance * 3, 0.3)
 
-            # Rejection sampling: pick a position, set it WHILE the sim is
-            # stopped so the flight controller initializes fresh at the new
-            # location (no PD loop wind-up from a mid-sim teleport), then
-            # start the sim and check lidar.  Retry if inside an obstacle.
+            # Rejection sampling: stop sim, set position while stopped
+            # (gives a fully clean dynamic state — no residual velocity,
+            # no PID wind-up), start, settle with sim steps, check lidar.
             for attempt in range(20):
-                # Stop simulation
+                x = float(self.np_random.uniform(lo, hi))
+                y = float(self.np_random.uniform(lo, hi))
                 try:
                     self.sim.stopSimulation()
                     while self.sim.getSimulationState() != self.sim.simulation_stopped:
-                        time.sleep(0.1)
+                        time.sleep(0.05)
                 except Exception:
                     pass
-
-                # Pick random spawn and set positions while stopped
-                x = float(self.np_random.uniform(lo, hi))
-                y = float(self.np_random.uniform(lo, hi))
                 self.sim.setObjectPosition(
                     self.drone, self.sim.handle_world, [x, y, z]
                 )
                 set_target(self.sim, self.target, x, y, z)
-
-                # Apply sim settings and start
                 self._apply_sim_settings()
                 self.sim.startSimulation()
-                time.sleep(0.5)
-
-                # Check if the spawn is safe
+                for _ in range(10):
+                    self.sim.step()
                 lidar = read_lidar_array(self.sim, self.lidar_handles)
                 if np.min(lidar) > safe_threshold:
-                    break  # Safe spawn, sim is running, ready to go
+                    break  # Safe spawn
         else:
-            # Fixed spawn — stop, start, place target at drone's position
-            try:
-                self.sim.stopSimulation()
-                while self.sim.getSimulationState() != self.sim.simulation_stopped:
-                    time.sleep(0.1)
-            except Exception:
-                pass
-
-            self._apply_sim_settings()
-            self.sim.startSimulation()
-            time.sleep(0.5)
-
+            # Fixed spawn — ensure sim is running (first call or after close)
+            if self.sim.getSimulationState() == self.sim.simulation_stopped:
+                self._apply_sim_settings()
+                self.sim.startSimulation()
+                for _ in range(10):
+                    self.sim.step()
             pos = get_drone_pos_array(self.sim, self.drone)
             set_target(self.sim, self.target, pos[0], pos[1], self.flight_height)
             x, y, z = pos[0], pos[1], self.flight_height

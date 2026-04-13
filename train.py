@@ -85,7 +85,7 @@ ENV_CONFIG = dict(
     spawn_margin=2.0,                  # Inset from boundaries (m), spawn in [-7, 7]
     # ────────────────────────────────────────────────────────────────────
 
-    disable_visualization=True,        # Toggle visualization off on reset
+    disable_visualization=False,        # Toggle visualization off on reset
     lidar_resolution=16,               # Vision sensor resolution (square)
 )
 
@@ -102,6 +102,7 @@ PPO_CONFIG = dict(
     ent_coef=0.01,                     # Entropy coefficient (encourages exploration)
     vf_coef=0.5,                       # Value function loss weight
     max_grad_norm=0.5,                 # Max gradient norm for clipping
+    target_kl=0.025,                   # Stop update early if approx_kl exceeds this
 )
 
 #  Evaluation Config
@@ -122,7 +123,7 @@ DEVICE = "cpu"                         # Device to train on ("cpu", "cuda", or "
 FINAL_MODEL_NAME = ""                  # Optional name (no extension). Example: "drone_ppo_run1"
 
 #  Multi-instance Config
-NUM_ENVS = 16                           # Number of parallel sims
+NUM_ENVS = 1                           # Number of parallel sims
 BASE_PORT = 23000                      # First ZMQ RPC port
 PORT_STRIDE = 2                        # Port increment per instance
 HOST = "localhost"
