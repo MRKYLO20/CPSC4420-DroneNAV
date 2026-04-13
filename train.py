@@ -89,11 +89,11 @@ ENV_CONFIG = dict(
 
 #  PPO parameters
 PPO_CONFIG = dict(
-    learning_rate=5e-4,                # Learning rate (alpha)
-    n_steps=256,                      # Steps per rollout before policy update
+    learning_rate=3e-4,                # WAS 5e-4 — lowered to fix high approx_kl with VecNormalize
+    n_steps=256,                      # Steps per rollout before policy update (× NUM_ENVS = total)
     batch_size=64,                     # Minibatch size for each gradient step
     n_epochs=10,                       # Number of PPO update epochs per rollout
-    gamma=0.98,                        # Discount factor for future rewards
+    gamma=0.995,                       # WAS 0.98 — longer planning horizon (~200 steps / 10s at 50ms dt)
     gae_lambda=0.95,                   # GAE lambda for advantage estimation
     clip_range=0.2,                    # PPO clipping range for policy updates
     ent_coef=0.01,                     # Entropy coefficient (encourages exploration)
