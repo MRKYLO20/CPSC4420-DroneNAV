@@ -100,10 +100,10 @@ PPO_CONFIG = dict(
     gamma=0.995,                       # WAS 0.98 — longer planning horizon (~200 steps / 10s at 50ms dt)
     gae_lambda=0.95,                   # GAE lambda for advantage estimation
     clip_range=0.2,                    # PPO clipping range for policy updates
-    ent_coef=0.01,                     # Entropy coefficient (encourages exploration)
+    ent_coef=0.005,                    # WAS 0.01 — lowered so policy can commit (std kept rising in v10/v11)
     vf_coef=0.5,                       # Value function loss weight
     max_grad_norm=0.5,                 # Max gradient norm for clipping
-    target_kl=0.025,                   # Stop update early if approx_kl exceeds this
+    target_kl=0.03,                    # WAS 0.025 — slightly higher ceiling to allow convergence
 )
 
 #  Evaluation Config
