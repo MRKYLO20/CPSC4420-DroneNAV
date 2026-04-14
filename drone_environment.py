@@ -97,6 +97,7 @@ class DroneAvoidanceEnv(gym.Env):
         # ── Spawn randomization ──
         randomize_start_pose,              # If True, sample (x, y) each reset
         spawn_margin,                      # Inset from boundary_min/max for spawn area (m)
+        spawn_map_path,                    # Path to spawn_map.npy (None = rejection sampling)
         # ── Sim / IO (required — supplied by train.py) ──
         disable_visualization,             # Toggle visualization off on reset
         lidar_resolution,                  # Vision sensor resolution (square). None to skip
@@ -175,6 +176,8 @@ class DroneAvoidanceEnv(gym.Env):
         # Spawn randomization
         self.randomize_start_pose = randomize_start_pose
         self.spawn_margin = spawn_margin
+        self.spawn_map_path = spawn_map_path
+        self._safe_spawns = None  # loaded lazily on first reset
 
         # Sim / IO
         self.render_mode = render_mode
@@ -477,41 +480,48 @@ class DroneAvoidanceEnv(gym.Env):
         self.prev_action = np.zeros(3, dtype=np.float32)
 
         if self.randomize_start_pose:
-            lo = self.boundary_min + self.spawn_margin
-            hi = self.boundary_max - self.spawn_margin
             z = self.flight_height
-            safe_threshold = max(self.collision_distance * 3, 0.3)
 
-            # Rejection sampling: stop sim, set position while stopped
-            # (gives a fully clean dynamic state — no residual velocity,
-            # no PID wind-up), start, settle with sim steps, check lidar.
-            for attempt in range(20):
+            # Load spawn map on first use (if provided)
+            if self._safe_spawns is None and self.spawn_map_path:
+                try:
+                    self._safe_spawns = np.load(self.spawn_map_path)
+                    print(f"  Loaded {len(self._safe_spawns)} safe spawn positions "
+                          f"from {self.spawn_map_path}")
+                except Exception as e:
+                    print(f"  Spawn map load failed ({e}), using random sampling")
+                    self._safe_spawns = np.array([])
+
+            # Pick spawn position from safe map or random
+            if self._safe_spawns is not None and len(self._safe_spawns) > 0:
+                idx = self.np_random.integers(len(self._safe_spawns))
+                x, y = float(self._safe_spawns[idx, 0]), float(self._safe_spawns[idx, 1])
+            else:
+                lo = self.boundary_min + self.spawn_margin
+                hi = self.boundary_max - self.spawn_margin
                 x = float(self.np_random.uniform(lo, hi))
                 y = float(self.np_random.uniform(lo, hi))
-                try:
-                    self.sim.stopSimulation()
-                    while self.sim.getSimulationState() != self.sim.simulation_stopped:
-                        time.sleep(0.05)
-                except Exception:
-                    pass
-                self.sim.setObjectPosition(
-                    self.drone, self.sim.handle_world, [x, y, z]
-                )
-                set_target(self.sim, self.target, x, y, z)
-                self._apply_sim_settings()
-                self.sim.startSimulation()
-                for _ in range(10):
-                    self.sim.step()
-                lidar = read_lidar_array(self.sim, self.lidar_handles)
-                if np.min(lidar) > safe_threshold:
-                    break  # Safe spawn
+
+            # Stop sim, set position while stopped (clean PID reset),
+            # start fresh.  With the spawn map this is exactly one
+            # stop/start per reset — no retries needed.
+            try:
+                self.sim.stopSimulation()
+                while self.sim.getSimulationState() != self.sim.simulation_stopped:
+                    time.sleep(0.05)
+            except Exception:
+                pass
+            self.sim.setObjectPosition(
+                self.drone, self.sim.handle_world, [x, y, z]
+            )
+            set_target(self.sim, self.target, x, y, z)
+            self._apply_sim_settings()
+            self.sim.startSimulation()
         else:
             # Fixed spawn — ensure sim is running (first call or after close)
             if self.sim.getSimulationState() == self.sim.simulation_stopped:
                 self._apply_sim_settings()
                 self.sim.startSimulation()
-                for _ in range(10):
-                    self.sim.step()
             pos = get_drone_pos_array(self.sim, self.drone)
             set_target(self.sim, self.target, pos[0], pos[1], self.flight_height)
             x, y, z = pos[0], pos[1], self.flight_height

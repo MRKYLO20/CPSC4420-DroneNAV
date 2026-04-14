@@ -83,9 +83,10 @@ ENV_CONFIG = dict(
     # (x, y) each episode. Spawn area is boundary ± margin.
     randomize_start_pose=True,         # NEW — random spawn each reset
     spawn_margin=2.0,                  # Inset from boundaries (m), spawn in [-7, 7]
+    spawn_map_path="spawn_map.npy",   # Pre-computed safe spawns (None = rejection sampling)
     # ────────────────────────────────────────────────────────────────────
 
-    disable_visualization=False,        # Toggle visualization off on reset
+    disable_visualization=True,        # Toggle visualization off on reset
     lidar_resolution=16,               # Vision sensor resolution (square)
 )
 
@@ -123,7 +124,7 @@ DEVICE = "cpu"                         # Device to train on ("cpu", "cuda", or "
 FINAL_MODEL_NAME = ""                  # Optional name (no extension). Example: "drone_ppo_run1"
 
 #  Multi-instance Config
-NUM_ENVS = 1                           # Number of parallel sims
+NUM_ENVS = 16                           # Number of parallel sims
 BASE_PORT = 23000                      # First ZMQ RPC port
 PORT_STRIDE = 2                        # Port increment per instance
 HOST = "localhost"
