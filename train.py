@@ -96,14 +96,14 @@ PPO_CONFIG = dict(
     learning_rate=3e-4,                # WAS 5e-4 — lowered to fix high approx_kl with VecNormalize
     n_steps=256,                      # Steps per rollout before policy update (× NUM_ENVS = total)
     batch_size=64,                     # Minibatch size for each gradient step
-    n_epochs=10,                       # Number of PPO update epochs per rollout
+    n_epochs=5,                        # WAS 10 — fewer epochs = less cumulative KL drift per update
     gamma=0.995,                       # WAS 0.98 — longer planning horizon (~200 steps / 10s at 50ms dt)
     gae_lambda=0.95,                   # GAE lambda for advantage estimation
     clip_range=0.2,                    # PPO clipping range for policy updates
     ent_coef=0.005,                    # WAS 0.01 — lowered so policy can commit (std kept rising in v10/v11)
     vf_coef=0.5,                       # Value function loss weight
     max_grad_norm=0.5,                 # Max gradient norm for clipping
-    target_kl=0.03,                    # WAS 0.025 — slightly higher ceiling to allow convergence
+    target_kl=0.04,                    # WAS 0.03 — raised to give more headroom (effective cutoff = 1.5x = 0.06)
 )
 
 #  Evaluation Config
