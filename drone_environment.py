@@ -295,21 +295,22 @@ class DroneAvoidanceEnv(gym.Env):
     #  Exploration tracking
     def _get_grid_cell(self, pos):
         """
-        Converts a world position to a discrete grid cell.
+        Converts a world position to a discrete 2D grid cell (x, y only).
 
-        Used to track which areas the drone has visited so the
-        exploration reward can encourage covering new ground.
+        Height is deliberately excluded so the drone can't game the
+        exploration reward by climbing to "new" altitude slices above
+        already-explored ground.  The altitude bonus/penalty handles
+        vertical behaviour separately.
 
         Args:
             pos (np.ndarray): ``[x, y, z]`` position in metres.
 
         Returns:
-            tuple[int, int, int]: Grid cell indices (gx, gy, gz).
+            tuple[int, int]: Grid cell indices (gx, gy).
         """
         gx = int(pos[0] / self.exploration_grid_size)
         gy = int(pos[1] / self.exploration_grid_size)
-        gz = int(pos[2] / self.exploration_grid_size)
-        return (gx, gy, gz)
+        return (gx, gy)
 
 
     #  Reward
