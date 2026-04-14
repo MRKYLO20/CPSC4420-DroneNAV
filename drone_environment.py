@@ -191,10 +191,11 @@ class DroneAvoidanceEnv(gym.Env):
 
         # Observation space
         # (4 sensors × lidar_bins) lidar + 3 position + 3 velocity
-        lidar_dim = 4 * self.lidar_bins
-        obs_dim = lidar_dim + 3 + 3
+        # Cached as self.lidar_dim / self.obs_dim for use in hot paths
+        self.lidar_dim = 4 * self.lidar_bins
+        self.obs_dim = self.lidar_dim + 3 + 3
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
         )
 
         # Action space
@@ -217,6 +218,9 @@ class DroneAvoidanceEnv(gym.Env):
         self.steps_in_current_cell = 0
         self.last_cell = None
         self.prev_action = np.zeros(3, dtype=np.float32)
+        # Cached target position — updated in reset() and step() so we
+        # don't have to read it from the sim every step (saves 1 ZMQ call).
+        self._target_pos = np.zeros(3, dtype=np.float32)
         self._connected = False
 
         # Profiling accumulators (seconds)
@@ -341,10 +345,9 @@ class DroneAvoidanceEnv(gym.Env):
                 info (dict): Additional diagnostics about what
                     triggered the reward components.
         """
-        lidar_dim = 4 * self.lidar_bins
-        lidar = obs[:lidar_dim]
-        pos = obs[lidar_dim:lidar_dim + 3]
-        vel = obs[lidar_dim + 3:lidar_dim + 6]
+        lidar = obs[:self.lidar_dim]
+        pos = obs[self.lidar_dim:self.lidar_dim + 3]
+        vel = obs[self.lidar_dim + 3:self.lidar_dim + 6]
 
         reward = 0.0
         terminated = False
@@ -523,8 +526,13 @@ class DroneAvoidanceEnv(gym.Env):
                 self._apply_sim_settings()
                 self.sim.startSimulation()
             pos = get_drone_pos_array(self.sim, self.drone)
-            set_target(self.sim, self.target, pos[0], pos[1], self.flight_height)
-            x, y, z = pos[0], pos[1], self.flight_height
+            x, y, z = float(pos[0]), float(pos[1]), self.flight_height
+            set_target(self.sim, self.target, x, y, z)
+
+        # Sync cached target position
+        self._target_pos[0] = x
+        self._target_pos[1] = y
+        self._target_pos[2] = z
 
         # Build first observation
         observation = self._get_observation()
@@ -573,16 +581,21 @@ class DroneAvoidanceEnv(gym.Env):
         action = np.clip(action, -1.0, 1.0)
         scaled_action = action * self.speed_scale
 
-        # Get current target position and apply the action
-        current_target = self.sim.getObjectPosition(
-            self.target, self.sim.handle_world
-        )
-        new_x = current_target[0] + scaled_action[0]
-        new_y = current_target[1] + scaled_action[1]
-        new_z = current_target[2] + scaled_action[2]
+        # Apply the action to the cached target position (no sim read).
+        new_x = float(self._target_pos[0] + scaled_action[0])
+        new_y = float(self._target_pos[1] + scaled_action[1])
+        new_z = float(self._target_pos[2] + scaled_action[2])
 
         # Clamp altitude to allowed range
-        new_z = max(self.min_altitude, min(self.max_altitude, new_z))
+        if new_z < self.min_altitude:
+            new_z = self.min_altitude
+        elif new_z > self.max_altitude:
+            new_z = self.max_altitude
+
+        # Write back both the cache and the sim
+        self._target_pos[0] = new_x
+        self._target_pos[1] = new_y
+        self._target_pos[2] = new_z
 
         if do_profile:
             t0 = time.perf_counter()
@@ -617,7 +630,7 @@ class DroneAvoidanceEnv(gym.Env):
         # Attach step diagnostics
         info['step'] = self.step_count
         info['visited_cells'] = len(self.visited_cells)
-        info['min_lidar'] = float(np.min(observation[:4 * self.lidar_bins]))
+        info['min_lidar'] = float(np.min(observation[:self.lidar_dim]))
 
         if do_profile:
             self._profile["steps"] += 1
