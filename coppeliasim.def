@@ -1,0 +1,32 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%post
+    apt-get update && apt-get install -y \
+        wget tar xz-utils xvfb \
+        libx11-6 libxcb1 libgl1-mesa-dev \
+        libavcodec-dev libavformat-dev libswscale-dev \
+        python3 python3-pip python3-venv \
+        && rm -rf /var/lib/apt/lists/*
+
+    cd /opt
+    wget https://downloads.coppeliarobotics.com/V4_10_0_rev0/CoppeliaSim_Edu_V4_10_0_rev0_Ubuntu24_04.tar.xz
+    tar xf CoppeliaSim_Edu_V4_10_0_rev0_Ubuntu24_04.tar.xz
+    rm CoppeliaSim_Edu_V4_10_0_rev0_Ubuntu24_04.tar.xz
+    mv CoppeliaSim_Edu_V4_10_0_rev0_Ubuntu24_04 coppeliasim
+
+    pip3 install --no-cache-dir --break-system-packages \
+        coppeliasim-zmqremoteapi-client \
+        gymnasium numpy \
+        stable-baselines3 tensorboard \
+        torch --extra-index-url https://download.pytorch.org/whl/cpu \
+        rich tqdm
+
+%environment
+    export COPPELIASIM_ROOT=/opt/coppeliasim
+    export PATH=$COPPELIASIM_ROOT:$PATH
+    export LD_LIBRARY_PATH=$COPPELIASIM_ROOT:$LD_LIBRARY_PATH
+    export QT_QPA_PLATFORM=offscreen
+
+%runscript
+    exec "$@"
