@@ -1,3 +1,22 @@
+# ── Apptainer / Singularity container definition ──
+#
+# Builds a container with CoppeliaSim Edu V4.10.0 rev0 for Ubuntu 24.04
+# and all Python dependencies needed by the DroneNAV training pipeline.
+#
+# Build:
+#     apptainer build coppeliasim.sif coppeliasim.def
+#
+# Run (interactive):
+#     apptainer shell coppeliasim.sif
+#
+# Run (training):
+#     apptainer exec coppeliasim.sif python3 train.py
+#
+# The container uses xvfb for headless OpenGL rendering and sets
+# QT_QPA_PLATFORM=offscreen so CoppeliaSim does not require a display.
+#
+# Target: CoppeliaSim Edu V4.10.0 rev0 (Ubuntu 24.04, x86_64)
+
 Bootstrap: docker
 From: ubuntu:24.04
 
